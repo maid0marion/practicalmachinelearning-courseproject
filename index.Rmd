@@ -1,0 +1,234 @@
+---
+title: "Predicting Quality of Exercise"
+author: "Julie Repass"
+date: "August 27, 2016"
+output: html_document
+---
+
+```{r setup, cache = F, echo = F, message = F, warning = F, tidy = F}
+# make this an external chunk that can be included in any file
+library(knitr)
+options(width = 100)
+opts_chunk$set(message = F, error = F, warning = F, comment = NA, fig.align = 'center', dpi = 100, tidy = F, cache = T, cache.path = 'cache/', fig.path = 'fig/')
+
+options(xtable.type = 'html')
+knit_hooks$set(inline = function(x) {
+  if(is.numeric(x)) {
+    round(x, getOption('digits'))
+  } else {
+    paste(as.character(x), collapse = ', ')
+  }
+})
+knit_hooks$set(plot = knitr:::hook_plot_html)
+```
+
+## Overview
+The goal of this project is to develop a prediction model to determine the method in which a person performed an exercise using accelerometer data collected in the [Weight Lifting Exercise Dataset](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises).  The dataset ^[Data Source: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201). Proceedings of 4th Augmented Human (AH) International Conference in cooperation with ACM SIGCHI (Augmented Human'13) . Stuttgart, Germany: ACM SIGCHI, 2013.] is hosted by [Groupware](http://groupware.les.inf.puc-rio.br/har) and comes from a study  to determine how the quality, rather than the quantity, of performing an exercise could be measured from wearable fitness devices. 
+
+Accelerometer sensors were placed on the arm, forearm, belt, and dumbbell of 6 participants who were instructed to execute one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5 different ways.  One method corresponded to the correct execution of the exercise according to the specification, while the other 4 methods corresponded to common mistakes performed during this exercise.  These were recorded in the dataset under the “classe” variable as:
+
+A.	Correct method of executing the exercise according to the specification.
+B.	Incorrect method where elbows are thrown to the front.
+C.	Incorrect method where the barbell is only lifted halfway.
+D.	Incorrect method where the barbell is only lowered halfway.
+E.	Incorrect method  where the hips are thrown to the front.
+
+This report contains details on how a prediction model was built from the remaining dataset features  in order to classify which manner the exercise was performed (i.e., classe A, B, C, D, or E).  It also includes a summary of results including how it performed against the validation data and its estimated out-of-sample error rates.
+
+## Data Summary
+
+For this project, the data was already partitioned into a [training dataset]( https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and a [test dataset](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv). After loading the training dataset in R, basic properties of the data were explored to better understand their applicability towards a prediction model.
+
+```{r}
+require(caret)
+dat = read.csv("data/pml-training.csv")
+dat_testing = read.csv("data/pml-testing.csv")
+dim(dat)
+```
+
+The dimension properties of the dataset show there are **`r dim(dat)[[1]]`** records and **`r dim(dat)[[2]]`** fields. The large feature set made exploratory plots challenging, but it was evident from scanning a summary of the feature data that there were many fields with a large number of missing values.  The following code was used to better understand the degree to which missing data were present in the dataset:
+
+```{r}
+NAs <- apply(dat, 2, function(x) {sum(is.na(x))})
+NAt <- table(colnames(dat), NAs)
+n <- apply(NAt, 2, sum); print(n)
+```
+
+The outcome of the evaluation of the missing data values provided two interesting observations: 
+
+1. **`r n[[2]]`** of **`r n[[1]]`** (**`r round(n[[2]]/dim(dat)[[2]]*100, 0)`%**) of the features contain a large number of missing values. 
+2. All the features that contain missing values contain the same number of missing values:  **`r as.numeric(colnames(NAt))[2]`** of **`r dim(dat)[[1]]`** (or **`r round(as.numeric(colnames(NAt))[2]/dim(dat)[[1]]*100, 0)`%**) of the data points were missing.
+
+## Predictor Selection and Pre-Processing Considerations
+Since the objective of the model is to make a prediction based on 5 possible classification outcomes rather than a binary or continuous outcome, a non-parametric modeling approach seemed likely to obtain the best results.  As a result, typical preprocessing steps done for linear models, like normalization of continuous variables, did not seem necessary at this point.
+
+However, it was evident from exploring the data that some feature reduction needed to occur to develop a better predictor set.  Features that did not evaluate to being good predictors were removed from the training data and subsequently from the test dataset using the following steps:
+
+**1.  Remove the row index.** The first feature removed was an ‘X’ feature that corresponded to a row index, so this was removed because it is not a relevant predictor and would mislead the predictor when applying the model on a new dataset. 
+
+```{r}
+new_dat <- dat[,-c(1)]
+print("Remaining Predictors", quote=FALSE); print(dim(new_dat)[[2]]-1)
+```
+
+**2. Remove variables that have little to no variance as they do not form good predictors.**
+```{r}
+new_dat <- new_dat[,-nearZeroVar(new_dat)]
+print("Remaining Predictors", quote=FALSE); print(dim(new_dat)[[2]]-1)
+```
+
+**3. Remove features with missing values.**
+
+```{r}
+NAs <- apply(new_dat, 2, function(x) {sum(is.na(x))})
+NAt <- table(colnames(new_dat), NAs)
+training_final <- new_dat[, which (NAs < 1)]
+print("Remaining Predictors", quote=FALSE); print(dim(training_final)[[2]]-1)
+```
+
+Since these features all had such a high percentage of missing values, they were excluded rather than attempting to impute the missing values. As shown in the code output above, the preprocessing steps resulted in a final training set includes **`r dim(training_final)[[2]] - 1`** predictor variables (subtracted **1** during each step to account remove the outcome variable from the count).
+
+**4. Preprocess the test dataset the same as the training dataset.** Once the training dataset was processed, the last step was to remove the same features from the test data set based on the features excluded from the training dataset.  
+
+*NOTE: the outcome variable is first removed from the training dataset because it is not present in the test dataset provided.  This was done so that the model results could be validated separately through an online submission for the course project.*
+
+```{r}
+c <- colnames(training_final)
+c <- c[-length(c)] 
+testing_final <- dat_testing[,c]
+dim(testing_final)
+```
+
+The result of applying the preprocessing results to the test dataset show there are now **`r dim(testing_final)[[2]]`** features in the test dataset as well.
+
+## Modeling Methods
+
+As mentioned in the predictor selection section above, the model approach taken was driven by the main objective of the prediction model, which is to predict a categorical outcome.  As a result, the non-parametric decision-tree model was first evaluated.  Additional advantages seen from taking a non-parametric approach is that it would not require as many assumptions about the underlying data.  For example, it is not as important that continuous variables fit a particular distribution type.  Random forests in particular also have the quality of being able to handle a large number of variables while still being quite accurate, which is attractive in the context of the 57 features used in the model.
+
+
+### Cross-Validation
+
+Cross-validation subdivides the training data set into one or more training and validation sub-sets to train the prediction mode. This works to mitigate modeling effects of overfitting and to provide a better out-of-sample (OOS) error estimate. A K-folds cross-validation approach was selected over a random sampling approach in order to preserve the time structure in the data.  For example, it would be more difficult to predict whether the barbell was only lifted or lowered halfway (classe C or D, respectively) as opposed to performing the exercise correctly (classe A) if the relative sequence of events were ignored.  
+
+For selecting a K-fold, achieving a balance between bias and variance was the primary consideration. For example the larger the number of K-folds, the less bias will be present in the outcome predictions which will allow for a better estimate of the out-of-sample (OOS) error rate.  The trade-off however will be a higher variance in the prediction outcome.  Conversely if the number of K-folds is small, lower variance is typically achieved at the cost of a higher bias in the prediction outcome.  For this particular model, since there were no requirements indicating a need to optimize for either bias or variance, 5 folds were selected as it mirrors the typical 80/20 training- validation design in machine learning models.  
+
+### Model Building & Iteration
+
+Several training models were built to compare the effects of parameter adjustment on the prediction results.  For each model, the same seed of '32323' was set for the pseudo-random number generator to support reproducibility and a more objective comparison across different model settings.
+
+As a starting point, a simple decision-tree model was built in order to compare the results of bagging and boosting using random forests using the following R code:
+
+```{r}
+set.seed(32323)
+rpart_model <- train(classe ~ ., data=training_final, method="rpart",
+                     trControl=trainControl(method="cv", number=5))
+```
+
+Next, the same model was run using random forests (method = "rf")^[NOTE: in order to be able to render the .RMD as html, this code was run separately with the same seed setting and the output saved so it could be loaded and summarized in this report  The code is included as "ModelCode.R" checked in to the github repository alongside the "PredictingExerciseQuality.RMD".].  This method improves upon the basic decision tree model by also using bagging, or aggregated bootstrapping, along with an ensemble method to vote on the most probably outcome based on growth of multiple trees:
+
+```{r eval=FALSE}
+set.seed(32323)
+
+# random forest without setting ntree parameter
+rf_model_5tree <- train(classe ~ ., data=training_final, method="rf", 
+                trControl=trainControl(method="cv", number=5), prox=TRUE,
+                allowParallel=TRUE)
+```
+
+However, it took approximately 1 hour to train the model even with enabling the allowParallel option for multi-threading.  In the interest of performance scalability, the following 3 models were run to explore the effects of using the ntree parameter, which sets the number of trees to grow. The [R package documentation](https://cran.r-project.org/web/packages/randomForest/randomForest.pdf) advises that the ntree should not be set too small in order to ensure that each row gets predicted at least multiple times.  The only difference in the training models were the number of ntrees, set to 5, 10, and 15 per the R code below:
+
+```{r eval=FALSE}
+set.seed(32323)
+
+# random forest with ntree = 5
+rf_model_5tree <- train(classe ~ ., data=training_final, method="rf", ntree=5,
+                trControl=trainControl(method="cv", number=5), prox=TRUE,
+                allowParallel=TRUE)
+
+# random forest with ntree = 10
+rf_model_10tree <- train(classe ~ ., data=training_final, method="rf", ntree=10,
+                        trControl=trainControl(method="cv", number=5), prox=TRUE,
+                        allowParallel=TRUE)
+
+# random forest with ntree = 15
+rf_model_15tree <- train(classe ~ ., data=training_final, method="rf", ntree=15,
+                        trControl=trainControl(method="cv", number=5), prox=TRUE,
+                        allowParallel=TRUE)
+```
+
+```{r echo=FALSE}
+load("data/rf_model_5tree_results.RData")
+load("data/rf_model_5tree_err.RData")
+load("data/rf_model_5tree_conf.RData")
+
+# Best tune
+besttune_5tree <- rf_model_5tree_results[which(rf_model_5tree_results$Accuracy ==
+                                                   max(rf_model_5tree_results$Accuracy)),]
+
+# OOB error rate
+oob_5tree <- round(min(rf_model_5tree_err[,1]) * 100, 2)
+```
+
+## Results
+
+The results were evaluated using the **Accuracy** and **Kappa** statistics which are standard metrics for models predicting categorical outcomes.  Accuracy is measures the proportion of predictions correct, while the Kappa statistic is a measure of concordance which takes into account the agreement occurring by chance. 
+
+As shown in Figure 1 below, model performance using the "rpart" decision tree method were found to be extremely poor, to the point of being correct ~1/3 times after taking into account chance:
+
+```{r echo=FALSE}
+rpart_model_results <- rpart_model$results
+print(rpart_model_results[which(rpart_model_results$Accuracy ==
+                                    max(rpart_model_results$Accuracy)),])
+```
+**Figure 1.** Best results from the "rpart" training model, which uses a decision tree model that does not use bagging or boosting methods. 
+ 
+ 
+By contrast, as shown in Figure 2 below the model performance of using random forests was excellent, regardless of the ntree parameter setting used:
+
+```{r echo=FALSE}
+load("data/rf_model_10tree_results.RData")
+load("data/rf_model_10tree_err.RData")
+load("data/rf_model_10tree_conf.RData")
+
+# Best tune
+besttune_10tree <- rf_model_10tree_results[which(rf_model_10tree_results$Accuracy == max(rf_model_10tree_results$Accuracy)),]
+
+# OOB error rate
+oob_10tree <- round(min(rf_model_10tree_err[,1]) * 100, 2)
+```
+
+```{r echo=FALSE}
+load("data/rf_model_15tree_results.RData")
+load("data/rf_model_15tree_err.RData")
+load("data/rf_model_15tree_conf.RData")
+
+# Best tune
+besttune_15tree <- rf_model_15tree_results[which(rf_model_15tree_results$Accuracy == max(rf_model_15tree_results$Accuracy)),]
+
+# OOB error rate
+oob_15tree <- round(min(rf_model_15tree_err[,1]) * 100, 2)
+```
+
+
+```{r echo=FALSE}
+require(dplyr)
+
+besttune_all <- rbind(besttune_5tree, besttune_10tree, besttune_15tree)
+row.names(besttune_all) <- c("5 tree", "10 tree", "15 tree")
+d <- data.frame(besttune_all)
+d[1, 6] <- oob_5tree
+d[2, 6] <- oob_10tree
+d[3, 6] <- oob_15tree
+d <- rename(d, OOB = V6)
+d
+```
+**Figure 2.**  Model Results comparing Random Forests with different ntree parameter settings. 
+
+When comparing the results among the three random forest models, two interesting observations are noted: 
+
+1. In each model, the optimized mtry value, or the number of variables randomly sampled as candidates at each split, was **40**. 
+
+2. Although the optimized accuracy was comparable across different ntree settings **99.9%**, the out-of-bag (OOB) error estimate was lowest with the highest ntree setting of 15 trees **`r d[3,6]`**. This is the best estimate of the OOS error rate because the OOB is calculated based on observations that were not included as part of the training model.
+
+#### Conclusion
+Although all random forest models run had high accuracy of **99.9%** and a low estimated OOS error, the final model chosen for the prediction algorithm was the random forest model using 15 trees which has the lowest estimated OOS error rate of **`r d[3,6]`**.  It was also chosen because it did not incur an observable cost in performance, thus would likely scale better in scenarios with larger sample sizes compared to a model that did not limit this value.
